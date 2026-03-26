@@ -37,18 +37,23 @@ torch.manual_seed(SEED)
 # Paths
 # -------------------------------------------------------
 
-DATA_DIR = r"D:\ML\Migration Barrier\migration_barrier_ml\data\raw\nebDFT2k"
+BASE = r"D:\ML\Migration Barrier\migration_barrier_ml"
+
+DATA_DIR = os.path.join(BASE,"data","raw","nebDFT2k")
 INDEX_FILE = os.path.join(DATA_DIR,"nebDFT2k_index.csv")
 
-DATASET_FILE = "hybrid_dataset_edge.pkl"
+DATASET_FILE = "hybrid_dataset_edge_noembed.pkl"
 
-MODEL_DIR="models"
-RESULT_DIR="results"
-DATASET_DIR="datasets"
+MODEL_DIR=os.path.join(BASE,"models_noembed")
+RESULT_DIR=os.path.join(BASE,"results_noembed")
+DATASET_DIR=os.path.join(BASE,"datasets_noembed")
 
 os.makedirs(MODEL_DIR,exist_ok=True)
 os.makedirs(RESULT_DIR,exist_ok=True)
 os.makedirs(DATASET_DIR,exist_ok=True)
+
+
+REMOVE_IDX=[6,52,87]
 
 
 # -------------------------------------------------------
@@ -194,17 +199,14 @@ else:
         density=vol/nat
 
         feat=[
-
             vol,nat,density,
             hop,coord,
             avg_dist,min_dist,std_dist,
             bottleneck,
             distortion
-
         ]
 
         features.append(feat)
-
         targets.append(row["em_dft"])
 
     pickle.dump((graphs,features,targets),open(DATASET_FILE,"wb"))
@@ -294,7 +296,7 @@ for epoch in range(40):
 
 torch.save(
     encoder.state_dict(),
-    os.path.join(MODEL_DIR,"path_gnn.pt")
+    os.path.join(MODEL_DIR,"path_gnn_noembed.pt")
 )
 
 print("Saved Path-GNN model")
@@ -313,14 +315,17 @@ for g in graphs:
     g.batch=torch.zeros(g.x.shape[0],dtype=torch.long)
 
     with torch.no_grad():
-
         emb=encoder(g)
 
-    embeddings.append(emb.numpy()[0])
+    emb=emb.numpy()[0]
+
+    emb=np.delete(emb,REMOVE_IDX)
+
+    embeddings.append(emb)
 
 embeddings=np.array(embeddings)
 
-np.save(os.path.join(DATASET_DIR,"gnn_embeddings.npy"),embeddings)
+np.save(os.path.join(DATASET_DIR,"gnn_embeddings_noembed.npy"),embeddings)
 
 print("Saved embeddings")
 
@@ -344,7 +349,6 @@ X_test=scaler.transform(X_test)
 
 
 model=XGBRegressor(
-
     n_estimators=3500,
     max_depth=9,
     learning_rate=0.02,
@@ -358,12 +362,12 @@ model.fit(X_train,y_train)
 
 pickle.dump(
     model,
-    open(os.path.join(MODEL_DIR,"hybrid_xgb.pkl"),"wb")
+    open(os.path.join(MODEL_DIR,"hybrid_xgb_noembed.pkl"),"wb")
 )
 
 pickle.dump(
     scaler,
-    open(os.path.join(MODEL_DIR,"scaler.pkl"),"wb")
+    open(os.path.join(MODEL_DIR,"scaler_noembed.pkl"),"wb")
 )
 
 print("Saved hybrid ML model")
@@ -373,21 +377,20 @@ print("Saved hybrid ML model")
 # Predictions
 # -------------------------------------------------------
 
-# Train metrics
 train_pred=np.exp(model.predict(X_train))
 train_true=np.exp(y_train)
+
+test_pred=np.exp(model.predict(X_test))
+test_true=np.exp(y_test)
 
 train_mae=mean_absolute_error(train_true,train_pred)
 train_r2=r2_score(train_true,train_pred)
 
-# Test metrics
-test_pred=np.exp(model.predict(X_test))
-test_true=np.exp(y_test)
-
 test_mae=mean_absolute_error(test_true,test_pred)
 test_r2=r2_score(test_true,test_pred)
 
-print("\nHybrid Migration Barrier Model")
+
+print("\nHybrid Migration Barrier Model (embedding removed)")
 
 print("\nTrain Performance")
 print("Train MAE:",train_mae)
@@ -398,39 +401,27 @@ print("Test MAE:",test_mae)
 print("Test R2 :",test_r2)
 
 
-# -------------------------------------------------------
-# Save metrics
-# -------------------------------------------------------
-
 metrics=pd.DataFrame({
-
 "train_MAE":[train_mae],
 "train_R2":[train_r2],
 "test_MAE":[test_mae],
 "test_R2":[test_r2]
-
 })
 
 metrics.to_csv(
-    os.path.join(RESULT_DIR,"internal_metrics.csv"),
+    os.path.join(RESULT_DIR,"internal_metrics_noembed.csv"),
     index=False
 )
 
 
-# -------------------------------------------------------
-# Save predictions
-# -------------------------------------------------------
-
 pred_df=pd.DataFrame({
-
 "true_barrier":test_true,
 "predicted_barrier":test_pred,
 "abs_error":np.abs(test_true-test_pred)
-
 })
 
 pred_df.to_csv(
-    os.path.join(RESULT_DIR,"internal_predictions.csv"),
+    os.path.join(RESULT_DIR,"internal_predictions_noembed.csv"),
     index=False
 )
 
