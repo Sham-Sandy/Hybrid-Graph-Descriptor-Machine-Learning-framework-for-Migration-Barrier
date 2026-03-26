@@ -26,7 +26,7 @@ os.makedirs(RESULT_DIR, exist_ok=True)
 
 
 # -------------------------------------------------------
-# LOAD DATA  ✅ (THIS WAS MISSING)
+# LOAD DATA  
 # -------------------------------------------------------
 
 print("Loading dataset...")
@@ -54,7 +54,7 @@ y = np.log(targets + 1e-6)
 
 
 # -------------------------------------------------------
-# SAME SPLIT FOR ALL  ✅ IMPORTANT
+# SAME SPLIT FOR ALL  IMPORTANT
 # -------------------------------------------------------
 
 idx = np.arange(len(y))
@@ -232,4 +232,4 @@ plt.savefig(os.path.join(RESULT_DIR, "model_comparison.png"), dpi=300)
 plt.close()
 
 
-print("\n✅ DONE: All results saved in", RESULT_DIR)
+print("\n DONE: All results saved in", RESULT_DIR)
