@@ -1,318 +1,235 @@
-```python
 import os
-import json
 import pickle
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-from torch_geometric.data import Data
-from torch_geometric.nn import GINEConv, global_mean_pool
-
-from pymatgen.core import Structure, Lattice
-
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, r2_score
 
-
-# -------------------------------------------------------
-# Paths
-# -------------------------------------------------------
-
-BASE = r"D:\ML\Migration Barrier\migration_barrier_ml"
-
-JSON_FILE = os.path.join(BASE,"data","raw","EM-COMPLETE-DATASET.json")
-
-MODEL_DIR = os.path.join(BASE,"models")
-RESULT_DIR = os.path.join(BASE,"results")
-
-os.makedirs(RESULT_DIR,exist_ok=True)
+from sklearn.svm import SVR
+from sklearn.ensemble import RandomForestRegressor
+from xgboost import XGBRegressor
 
 
 # -------------------------------------------------------
-# Load models
+# PATHS (EDIT IF NEEDED)
 # -------------------------------------------------------
 
-model = pickle.load(open(os.path.join(MODEL_DIR,"hybrid_xgb.pkl"),"rb"))
-scaler = pickle.load(open(os.path.join(MODEL_DIR,"scaler.pkl"),"rb"))
+DATASET_FILE = "hybrid_dataset_edge_noembed.pkl"
+EMBED_FILE = "datasets_noembed/gnn_embeddings_noembed.npy"
+
+RESULT_DIR = "results_ablation"
+os.makedirs(RESULT_DIR, exist_ok=True)
 
 
 # -------------------------------------------------------
-# GNN encoder
+# LOAD DATA  ✅ (THIS WAS MISSING)
 # -------------------------------------------------------
 
-class PathGNN(nn.Module):
+print("Loading dataset...")
 
-    def __init__(self):
+graphs, features, targets = pickle.load(open(DATASET_FILE, "rb"))
 
-        super().__init__()
+features = np.array(features)
+targets = np.array(targets)
 
-        nn1=nn.Sequential(
-            nn.Linear(3,64),
-            nn.ReLU(),
-            nn.Linear(64,64)
-        )
+print("Loading embeddings...")
+embeddings = np.load(EMBED_FILE)
 
-        self.conv1=GINEConv(nn1,edge_dim=1)
-
-        nn2=nn.Sequential(
-            nn.Linear(64,128),
-            nn.ReLU(),
-            nn.Linear(128,128)
-        )
-
-        self.conv2=GINEConv(nn2,edge_dim=1)
-
-        nn3=nn.Sequential(
-            nn.Linear(128,128),
-            nn.ReLU(),
-            nn.Linear(128,128)
-        )
-
-        self.conv3=GINEConv(nn3,edge_dim=1)
-
-    def forward(self,data):
-
-        x=data.x
-        edge_index=data.edge_index
-        edge_attr=data.edge_attr
-
-        x=F.relu(self.conv1(x,edge_index,edge_attr))
-        x=F.relu(self.conv2(x,edge_index,edge_attr))
-        x=F.relu(self.conv3(x,edge_index,edge_attr))
-
-        x=global_mean_pool(x,data.batch)
-
-        return x
+print("Samples:", len(features))
 
 
-encoder=PathGNN()
+# -------------------------------------------------------
+# FEATURE MATRICES
+# -------------------------------------------------------
 
-encoder.load_state_dict(
-    torch.load(os.path.join(MODEL_DIR,"path_gnn.pt"))
+X_desc = features
+X_gnn = embeddings
+X_hybrid = np.concatenate([features, embeddings], axis=1)
+
+y = np.log(targets + 1e-6)
+
+
+# -------------------------------------------------------
+# SAME SPLIT FOR ALL  ✅ IMPORTANT
+# -------------------------------------------------------
+
+idx = np.arange(len(y))
+
+train_idx, test_idx = train_test_split(
+    idx, test_size=0.2, random_state=42
 )
 
-encoder.eval()
+X_train_d, X_test_d = X_desc[train_idx], X_desc[test_idx]
+X_train_g, X_test_g = X_gnn[train_idx], X_gnn[test_idx]
+X_train_h, X_test_h = X_hybrid[train_idx], X_hybrid[test_idx]
+
+y_train, y_test = y[train_idx], y[test_idx]
 
 
 # -------------------------------------------------------
-# Li hop detection
+# SCALING
 # -------------------------------------------------------
 
-def detect_li_hop(struct):
+scaler_d = StandardScaler()
+scaler_g = StandardScaler()
+scaler_h = StandardScaler()
 
-    li_sites=[i for i,s in enumerate(struct.species) if s.symbol=="Li"]
+X_train_d = scaler_d.fit_transform(X_train_d)
+X_test_d = scaler_d.transform(X_test_d)
 
-    if len(li_sites)<2:
-        return None
+X_train_g = scaler_g.fit_transform(X_train_g)
+X_test_g = scaler_g.transform(X_test_g)
 
-    pairs=[]
-
-    for i in range(len(li_sites)):
-        for j in range(i+1,len(li_sites)):
-
-            d=struct.get_distance(li_sites[i],li_sites[j])
-            pairs.append((d,li_sites[i],li_sites[j]))
-
-    pairs.sort()
-
-    return pairs[0]
+X_train_h = scaler_h.fit_transform(X_train_h)
+X_test_h = scaler_h.transform(X_test_h)
 
 
 # -------------------------------------------------------
-# Graph builder
+# EVALUATION FUNCTION
 # -------------------------------------------------------
 
-def build_graph(struct,li1,li2):
+def evaluate(model, X_train, X_test, name):
 
-    nodes=[li1,li2]
+    model.fit(X_train, y_train)
 
-    neigh=struct.get_neighbors(struct[li1],3)
+    train_pred = np.exp(model.predict(X_train))
+    train_true = np.exp(y_train)
 
-    for n in neigh:
-        nodes.append(n.index)
+    test_pred = np.exp(model.predict(X_test))
+    test_true = np.exp(y_test)
 
-    nodes=list(set(nodes))
+    train_mae = mean_absolute_error(train_true, train_pred)
+    test_mae = mean_absolute_error(test_true, test_pred)
 
-    node_map={old:i for i,old in enumerate(nodes)}
+    train_r2 = r2_score(train_true, train_pred)
+    test_r2 = r2_score(test_true, test_pred)
 
-    node_feat=[]
-    edges=[]
-    edge_attr=[]
+    # Save predictions
+    df = pd.DataFrame({
+        "True": test_true,
+        "Predicted": test_pred,
+        "Error": np.abs(test_true - test_pred)
+    })
 
-    for i in nodes:
+    df.to_csv(os.path.join(RESULT_DIR, f"{name}_predictions.csv"), index=False)
 
-        site=struct[i]
+    # Parity plot
+    plt.figure(figsize=(5,5))
+    plt.scatter(test_true, test_pred, alpha=0.6)
+    plt.plot([test_true.min(), test_true.max()],
+             [test_true.min(), test_true.max()], 'r--')
+    plt.xlabel("DFT (eV)")
+    plt.ylabel("Predicted (eV)")
+    plt.title(name)
+    plt.tight_layout()
+    plt.savefig(os.path.join(RESULT_DIR, f"{name}_parity.png"), dpi=300)
+    plt.close()
 
-        Z=site.specie.Z
-        en=site.specie.X if site.specie.X else 0
-        r=site.specie.atomic_radius or 1
-
-        node_feat.append([Z,en,r])
-
-    for i in nodes:
-        for j in nodes:
-
-            if i>=j:
-                continue
-
-            d=struct.get_distance(i,j)
-
-            if d<4:
-
-                edges.append([node_map[i],node_map[j]])
-                edges.append([node_map[j],node_map[i]])
-
-                edge_attr.append([d])
-                edge_attr.append([d])
-
-    node_feat=torch.tensor(node_feat,dtype=torch.float)
-    edge_index=torch.tensor(edges).t().contiguous()
-    edge_attr=torch.tensor(edge_attr,dtype=torch.float)
-
-    return Data(x=node_feat,edge_index=edge_index,edge_attr=edge_attr)
+    return train_mae, test_mae, train_r2, test_r2
 
 
 # -------------------------------------------------------
-# Load external dataset
+# MODELS
 # -------------------------------------------------------
 
-data=json.load(open(JSON_FILE))
+models = {
 
-rows=[]
+    "XGB_Descriptor": (XGBRegressor(
+        n_estimators=3500,
+        max_depth=9,
+        learning_rate=0.02,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=42
+    ), X_train_d, X_test_d),
 
-print("Running Li-only external validation")
+    "RandomForest": (RandomForestRegressor(
+        n_estimators=500,
+        random_state=42,
+        n_jobs=-1
+    ), X_train_d, X_test_d),
 
-for entry in tqdm(data):
+    "SVR": (SVR(
+        kernel="rbf",
+        C=10,
+        gamma="scale"
+    ), X_train_d, X_test_d),
 
-    # ---------------------------------------------------
-    # Filter only Li working ion systems
-    # ---------------------------------------------------
+    "XGB_GNN": (XGBRegressor(
+        n_estimators=3500,
+        max_depth=9,
+        learning_rate=0.02,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=42
+    ), X_train_g, X_test_g),
 
-    if entry.get("working_ion","") != "Li":
-        continue
-
-
-    elems=entry["structure_ini"]["elements"]
-
-    if "Li" not in elems:
-        continue
-
-
-    struct=Structure(
-
-        Lattice(entry["structure_ini"]["lattice_mat"]),
-        elems,
-        entry["structure_ini"]["coords"]
-
-    )
-
-
-    hop_data=detect_li_hop(struct)
-
-    if hop_data is None:
-        continue
-
-
-    hop,li1,li2=hop_data
-
-
-    graph=build_graph(struct,li1,li2)
-
-
-    neigh=struct.get_neighbors(struct[li1],3)
-
-    dists=[n.nn_distance for n in neigh]
-
-    coord=len(dists)
-
-    avg_dist=np.mean(dists)
-    min_dist=np.min(dists)
-    std_dist=np.std(dists)
-
-    bottleneck=min_dist-1.4
-    distortion=std_dist/avg_dist
-
-    vol=struct.volume
-    nat=len(struct)
-    density=vol/nat
+    "XGB_Hybrid": (XGBRegressor(
+        n_estimators=3500,
+        max_depth=9,
+        learning_rate=0.02,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=42
+    ), X_train_h, X_test_h),
+}
 
 
-    feat=[
+# -------------------------------------------------------
+# RUN ALL MODELS
+# -------------------------------------------------------
 
-        vol,nat,density,
-        hop,coord,
-        avg_dist,min_dist,std_dist,
-        bottleneck,
-        distortion
+results = []
 
-    ]
+print("\nRunning ablation study...\n")
 
+for name, (model, Xtr, Xte) in models.items():
 
-    g=graph
-    g.batch=torch.zeros(g.x.shape[0],dtype=torch.long)
+    print(f"Training {name}...")
 
-    with torch.no_grad():
-        emb=encoder(g).numpy()[0]
+    tr_mae, te_mae, tr_r2, te_r2 = evaluate(model, Xtr, Xte, name)
 
-
-    X=np.concatenate([feat,emb]).reshape(1,-1)
-
-    X=scaler.transform(X)
-
-
-    pred=np.exp(model.predict(X))[0]
-
-    true=entry["target"]
-
-
-    rows.append({
-
-        "true_barrier":true,
-        "predicted_barrier":pred,
-        "abs_error":abs(true-pred)
-
+    results.append({
+        "Model": name,
+        "Train_MAE": tr_mae,
+        "Test_MAE": te_mae,
+        "Train_R2": tr_r2,
+        "Test_R2": te_r2
     })
 
 
-df=pd.DataFrame(rows)
+# -------------------------------------------------------
+# SAVE RESULTS
+# -------------------------------------------------------
 
-df.to_csv(
-    os.path.join(RESULT_DIR,"external_predictions_Li_only.csv"),
-    index=False
-)
+results_df = pd.DataFrame(results)
+
+print("\nFinal Results:")
+print(results_df)
+
+results_df.to_csv(os.path.join(RESULT_DIR, "ablation_all_models.csv"), index=False)
 
 
 # -------------------------------------------------------
-# Metrics
+# PLOT
 # -------------------------------------------------------
 
-mae=mean_absolute_error(df.true_barrier,df.predicted_barrier)
-r2=r2_score(df.true_barrier,df.predicted_barrier)
+plt.figure(figsize=(7,5))
 
-metrics=pd.DataFrame({
+sns.barplot(x="Model", y="Test_MAE", data=results_df)
 
-"MAE":[mae],
-"R2":[r2]
+plt.xticks(rotation=45)
+plt.ylabel("MAE (eV)")
+plt.title("Model Comparison")
 
-})
+plt.tight_layout()
+plt.savefig(os.path.join(RESULT_DIR, "model_comparison.png"), dpi=300)
 
-metrics.to_csv(
-    os.path.join(RESULT_DIR,"external_metrics_Li_only.csv"),
-    index=False
-)
+plt.close()
 
 
-print("\nExternal validation (Li only)")
-
-print("MAE:",mae)
-print("R2 :",r2)
-
-print("\nSaved:")
-
-print("results/external_predictions_Li_only.csv")
-print("results/external_metrics_Li_only.csv")
-```
+print("\n✅ DONE: All results saved in", RESULT_DIR)
